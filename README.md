@@ -113,6 +113,7 @@ Log messages are on the web page tab **Show Log**. The **Verbose** button reveal
 | `Failed to connect ... No serial data received` | not in download mode | use `--usb`, or hold BOOT while plugging in |
 | No `ESP32_AdBlocker_...` AP after flashing | storage/partition or boot failure | watch serial at 115200; reflash with the matching partition scheme |
 | `Startup Failure: Crash loop detected` after repeated resets | RTC flag from interrupted setup | fixed in this fork; a full power cycle also clears it |
+| Random reboot; serial shows `assert failed: sys_untimeout ... Required to lock TCPIP core functionality` | SNTP's own DNS lookup collides with the lwIP DNS cache clear | fixed in this fork: the NTP server defaults to an IP address so SNTP needs no DNS |
 
 ## Credits
 

@@ -79,7 +79,12 @@ TaskHandle_t statusCheckHandle = NULL;
 static inline void runStatusCheck();
 static bool startPing();
 char timezone[FILE_NAME_LEN] = "GMT0";
-char ntpServer[MAX_HOST_LEN] = "pool.ntp.org";
+/* An IP rather than a hostname on purpose: lwIP's SNTP client would otherwise
+ * keep a DNS request pending, and the Arduino core clears the lwIP DNS cache
+ * from a normal task whenever the IPv4/IPv6 state changes.  That fires the
+ * pending SNTP callback outside the TCPIP thread, which asserts in
+ * sys_untimeout().  A numeric server address skips DNS entirely. */
+char ntpServer[MAX_HOST_LEN] = "162.159.200.1";
 
 int netMode = 0; // 0=WiFi only, 1=Ethernet only, 2=Ethernet+AP
 
