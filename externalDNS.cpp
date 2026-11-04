@@ -194,7 +194,7 @@ void prepDNS() {
     close(dnsSock); dnsSock = -1;
     return;
   }
-  if (xTaskCreatePinnedToCore(dnsTask, "dnsTask", 4096, NULL, 3, NULL, 1) != pdPASS) {
+  if (xTaskCreatePinnedToCore(dnsTask, "dnsTask", 4096, NULL, 3, NULL, APP_CORE) != pdPASS) {
     snprintf(startupFailure, SF_LEN, STARTUP_FAIL "DNS worker not started");
     LOG_WRN("%s", startupFailure);
     close(dnsSock); dnsSock = -1;

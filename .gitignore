@@ -1,0 +1,19 @@
+# Build output
+build/
+.build/
+*.bin
+*.elf
+*.map
+*.hex
+
+# Local toolchain / IDE state
+.arduino/
+arduino-cli.yaml
+*.local.txt
+
+# OS
+.DS_Store
+
+# Secrets and local test artifacts (never commit)
+keys/
+*.pem

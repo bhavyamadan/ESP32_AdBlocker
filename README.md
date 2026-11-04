@@ -2,113 +2,118 @@
 
 ESP32_AdBlocker acts as a DNS Sinkhole (like [Pi-Hole](https://pi-hole.net/)) by returning 0.0.0.0 for any domain names in its blocklist, else uses an external DNS server to resolve IP addresses. This prevents content being retrieved from or sent to blocked domains. A web server is provided to control the service and monitor its operation.
 
-Version 3.7 includes
-* enhancements to DNS query handling and [LED status](#led-status) by user [@dateno1](https://github.com/dateno1)
-* timezone fix
-* fixes from user [@blueheart001](https://github.com/blueheart001)
+Fork of [s60sc/ESP32_AdBlocker](https://github.com/s60sc/ESP32_AdBlocker) adding **ESP32-C3 support** (flash-encryption-aware) and a few stability fixes.
 
-## Requirements
+## Supported boards
 
-ESP32_AdBlocker is an Arduino sketch. The ESP32 module needs PSRAM: 
-* ESP32-S3 with 8MB PSRAM can host a currently sized blocklist. Blocklist checks take <50 micro seconds.
-* ESP32 with 4MB PSRAM may truncate a currently sized blocklist. Blocklist checks take <100 micro seconds.
-
-## Operation
-
-<img src="extras/webpage.jpg" width="500" height="600">
-
-After power up, the defaut blocklist will be downloaded. It will take several minutes for ESP32_AdBlocker to be ready after processing and sorting the data. Progress can be monitored on the web page. Subsequent reloads of the same file are much quicker as only updates need to be processed. ESP32-S3 is about twice as fast as the ESP32.
-As only one file can be downloaded, a consolidated blocklist should be used. Ideally select a file less than the size of the PSRAM. The file format should be in either HOSTS format or Adblock format (only domain name entries processed). The following site for example provides a list of suitable files: https://github.com/StevenBlack/hosts.
-
-ESP32_AdBlocker will subsequently download the selected file daily at a given time to keep the blocklist updated. The user can also individually add their own sites to block or unblock which are stored in a local custom blocklist.
-
-The entries on the ESP32_AdBlocker web page are:
-* **Allowed domains**: number of domain requests which have been allowed through since restart
-* **Blocked domains**: number of domain requests which have been blocked since restart
-* **Current URL for blocklist file**: URL for blocklist being used
-* **Enter new URL for blocklist or domain**:
-  * After entering new URL for blocklist, press **Reload** button to download, or leave blank to reload current blocklist.
-  * After entering extra domain URL to be blocked, press **AddDomain** button. Not added if a duplicate or not resolvable. Alert message will show result.
-  * After entering existing domain URL to be be removed from blocklist, press **DelDomain** button. Alert message will show result.
-  * After entering domain URL to check if in blocklist, press **CheckDomain** button. Alert message will show result.
-* **Stop Blocklist Load**: Press **StopLoad** button to stop the currently downloading blocklist.
-* **Clear custom blocklist**: Clear the custom entries manually added or removed by user
-* **Enable AdBlocker**: Toggle Ad blocking on or off
-
-
-To make ESP32_AdBlocker your preferred DNS server, enter its IPv4 address in place of the current DNS server IPs in your router / devices. ESP32_AdBlocker does not have an IPv6 address but some devices use IPv6 by default, so disable IPv6 DNS on your device / router to force it to use IPv4 DNS.  
-Eg for a Windows PC network adapter, to use AdBlocker as DNS Server having IP address `192.168.1.168`, at the Windows command prompt, enter:  
-`netsh interface ip set dns "Wi-Fi" static 192.168.1.168`  
-To switch back to usual DNS Server, eg Google, enter:  
-`netsh interface ip set dns "Wi-Fi" static 8.8.8.8`  
-
-Browsers must have **Use secure DNS** disabled as this overrides adapter and router DNS settings.
+| Board | Blocklist storage | Capacity | Notes |
+|---|---|---|---|
+| ESP32-S3 (8MB PSRAM) | PSRAM arena, domain names | ~250k domains | Full feature set, fastest lookups |
+| ESP32 (4MB PSRAM) | PSRAM arena, domain names | ~100k domains | May truncate very large lists |
+| ESP32-C3 (4MB flash, no PSRAM) | Sorted 64-bit domain hashes in flash | ~110k domains | See [ESP32-C3 differences](#esp32-c3-no-psram) |
 
 ## Installation
 
-Download github files into the Arduino IDE sketch folder, removing `-main` from the application folder name.
+### Build from source
 
-Compile using esp32 arduino core min v3.1.1 with PSRAM enabled and the following Partition scheme:
-* ESP32-S3 - `8M with spiffs (...)`
-* ESP32 - `Minimal SPIFFS (...)`
+Requires [arduino-cli](https://arduino.github.io/arduino-cli/) with the esp32 core ≥ 3.1.1:
 
-On first installation, the application will start in wifi AP mode - connect to SSID: **ESP32_AdBlocker_...**, to allow router and password details to be entered via the web page on `192.168.4.1`. The configuration data file (except passwords) is automatically created, and the application web pages automatically downloaded from GitHub to the SD card **/data** folder when an internet connection is available.
+```sh
+arduino-cli core install esp32:esp32
 
-Subsequent updates to the application, or to the **/data** folder files, can be made using the **OTA Upload** tab. The **/data** folder can also be reloaded from GitHub using the **Reload /data** button on the **Edit Config** tab, or by using a WebDAV client.
+tools/build.sh c3      # ESP32-C3  -> build/c3/
+tools/build.sh s3      # ESP32-S3  -> build/s3/
+tools/build.sh esp32   # ESP32     -> build/esp32/
+```
 
-## Configuration
+Or use the Arduino IDE with these board settings:
 
-More configuration details accessed via **Edit Config** tab, which displays further buttons:
+* ESP32-S3 — `8M with spiffs (...)`, PSRAM enabled
+* ESP32 — `Minimal SPIFFS (...)`, PSRAM enabled
+* ESP32-C3 — `No OTA (2MB APP/2MB SPIFFS)`, USB CDC On Boot enabled
 
-* **Network**:
-Additional network and webserver settings. In particular set:
-  * Router IP Address to obtain static IP
-  * Static IP Address, used as AdBlocker DNS Server IP
+### Flash
 
-* **Settings**: 
-Environmental settings affecting blocklist operation.
+```sh
+tools/flash.sh /dev/cu.usbmodemXXXX           # normal boards
+tools/flash.sh /dev/cu.usbmodemXXXX --encrypt # modules with flash encryption enabled
+```
 
-* **Ethernet**: 
-Select the required [Network](#network-selection). To configure Ethernet, define the SPI pin numbers used to connect to the external Ethernet controller.
-Press **Save** to make changes persistent.
+Useful extra modes: `--usb` (reset into download mode over USB, no BOOT/RST buttons needed), `--manual` (board already in download mode), `--check` (print chip/flash info), `--verify` (read-back compare).
+
+### Modules with flash encryption enabled
+
+Some modules ship with `SPI_BOOT_CRYPT_CNT` burned in (flash encryption permanently enabled, key not readable). On those, a plaintext flash boots into `invalid header: 0x...`. Symptoms and recovery:
+
+1. `tools/flash.sh PORT --check` connects but the device never boots.
+2. Erase is refused with `Active security features detected ...` — this is expected, do **not** use `--force` on an erase.
+3. Flash with `tools/flash.sh PORT --encrypt`: the flasher stub encrypts each block with the chip's own eFuse key during the write, so no key file is needed.
+
+## First-time setup
+
+1. Power up. The device starts AP mode with SSID `ESP32_AdBlocker_<mac>`.
+2. Connect to it and open `http://192.168.4.1`, enter your WiFi SSID and password, and press **Connect**. The device reboots, downloads its web pages, and reboots again.
+3. Open the page again (via the AP, or the device's LAN IP), then **Edit Config → Network**:
+   * Set a **static IP address** — every client will use this as their DNS server, so it must not change. Reserve the same address in the router's DHCP table (or pick one outside the pool).
+   * Set gateway, subnet, and the upstream DNS servers (e.g. `1.1.1.1` / `1.0.0.1`). Do **not** point these at the router if the router forwards DNS to this device — that is a loop.
+4. **Save** (reboots). The default blocklist (StevenBlack hosts) downloads and is processed. First load takes several minutes; watch the progress on the AdBlocker tab.
+5. Point the network at it: set the router's DHCP-advertised DNS to the device's static IP. Disable IPv6 DNS on the router (the sinkhole answers IPv4 only) and turn off *Secure DNS / DoH* in browsers.
+6. Verify: `nslookup doubleclick.net <device-ip>` should answer `0.0.0.0`.
+
+Locked ISP router (can't change DHCP DNS)? Set the DNS server manually on each device instead — it persists per network.
+
+## Operation
+
+The web page shows:
+
+* **Allowed / Blocked domains** — counters since restart
+* **Current URL for blocklist file** — the source in use
+* **Enter new URL for blocklist or domain** — with **Reload**, **AddDomain**, **DelDomain**, **CheckDomain** buttons
+* **Stop Blocklist Load** — abort a running download (keeps the previous list)
+* **Clear custom blocklist** — drop all manually added/removed domains
+* **Enable AdBlocker** — master on/off
+
+To use it as your DNS server, enter its IPv4 address in place of the current DNS server IPs in your router / devices. The blocklist is re-downloaded daily (default 04:00, see `alarmHour`).
+
+## ESP32-C3 (no PSRAM)
+
+The C3 has no PSRAM and about 400KB of SRAM, so the blocklist cannot be held in RAM the way the ESP32 and ESP32-S3 builds do. On the C3 the blocklist is stored in the flash data partition as a sorted array of 64-bit FNV-1a domain hashes and every DNS query binary searches that file. See `blocklistC3.cpp`.
+
+Differences from the PSRAM build:
+
+* Only hashes are stored, not the domain names. **Add Domain**, **Del Domain** and **Check Domain** all still work; the *showBL* debug listing prints hashes.
+* `useSnap` and `minMemory` have no effect — the hash file is already the persistent copy, so a reboot serves the previous list immediately.
+* **OTA Upload is not available**: the 4MB flash is split into a 2MB application and a 1.875MB blocklist partition, so there is no second application slot. Update over USB instead.
+* The first load is slow (several minutes): the list is downloaded over TLS, hashed, then sorted in flash in several passes. Progress is shown on the web page as `Sort 12%` and so on.
+
+## LED status
+
+An onboard LED can signal status. Configure it via **Settings** (pin, active high/low, simple vs WS2812, brightness).
+
+| State | Simple LED |
+|---|---|
+| AP mode | slow blink |
+| Active | steady |
+| Offline (serving cached list) | very slow blink |
+| Failure | fast blink |
+| Downloading hosts | medium blink |
+
+Set the pin to 0 to disable the LED.
 
 ## Logging
 
-The application log messages can be monitored on the web page tab **Show Log**.
+Log messages are on the web page tab **Show Log**. The **Verbose** button reveals per-query logging. On C3 with USB-CDC-On-Boot, the log is also on the native USB serial at 115200.
 
-The **Verbose** button will reveal extra logging for each blocked or accepted connection.
+## Troubleshooting
 
-## Network Selection
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `invalid header: 0x...` at boot | module has flash encryption enabled, image written plaintext | reflash with `tools/flash.sh PORT --encrypt` |
+| `Active security features detected` when erasing | flash encryption / secure boot eFuses set | expected; write with `--encrypt`, never force an erase |
+| `Failed to connect ... No serial data received` | not in download mode | use `--usb`, or hold BOOT while plugging in |
+| No `ESP32_AdBlocker_...` AP after flashing | storage/partition or boot failure | watch serial at 115200; reflash with the matching partition scheme |
+| `Startup Failure: Crash loop detected` after repeated resets | RTC flag from interrupted setup | fixed in this fork; a full power cycle also clears it |
 
-Default network interface is Wifi, but Ethernet could be used instead using boards with built in Ethernet, or by connecting an external Ethernet controller.
-Feature only tested for W5500 Ethernet controller connected to ESP32S3 board.
-The selected network interface is available after configuration and reboot.
+## Credits
 
-Options:
-* **WiFi**: default, also fallback if Ethernet cannot be connected
-* **Eth+AP**: Ethernet plus ESP Access Point. Do not open web pages on each network concurrently.
-* **Ethernet**: Ethernet only, no Wifi
-
-## LED Status
-
-An onboard or external LED can be use to signal the status of the app, depending on the type of LED available:
-
-Simple LED:
-* AP Mode: Slow blink
-* Active: Steady
-* Offline: Very slow blink
-* Failure: Fast blink
-* Downloading hosts: Medium blink
-
-W2812 RGB LED:
-* AP Mode: Slow blink Yellow
-* Active: Steady Green
-* Offline: Very slow blink Teal
-* Failure: Fast blink Red
-* Downloading hosts: Medium blink Blue
-* Attempting to download hosts without internet: Flashing Purple
-
-The LED is configured using the **Settings** button in the web page tab **Edit Config**.  
-Setting the LED Pin value to 0 disables the LED.
-
-
+Based on [s60sc/ESP32_AdBlocker](https://github.com/s60sc/ESP32_AdBlocker), which credits [esphole](https://github.com/rubfi/esphole) for the original idea.

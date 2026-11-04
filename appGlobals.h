@@ -6,8 +6,28 @@
 #pragma once
 #include "globals.h"
 
+#if CONFIG_IDF_TARGET_ESP32S2
+#error "App not compatible with ESP32 S2 model"
+#endif
+
+/* ESP32-C3 has no PSRAM and only ~400KB SRAM, so the original design (a
+ * multi-megabyte domain arena in PSRAM) cannot run there.  On C3 the blocklist
+ * is instead kept in flash as a sorted array of 64-bit domain hashes and is
+ * searched with a binary search over the file.  See blocklistC3.cpp. */
+#if CONFIG_IDF_TARGET_ESP32C3
+#define BL_FLASH_INDEX 1
+#define NEED_PSRAM 0
+#else
+#define BL_FLASH_INDEX 0
+#define NEED_PSRAM 1
+#define MIN_PSRAM 4
+#endif
+
+// ESP32-C3 is single core, so nothing may be pinned to core 1
 #if CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S2
-#error "App not compatible with ESP32 C3 or S2 model"
+#define APP_CORE 0
+#else
+#define APP_CORE 1
 #endif
 
 #define ALLOW_SPACES false // set true to allow whitespace in configs.txt key values
@@ -26,8 +46,6 @@
 #define DOT_MAX 50
 #define HOSTNAME_GRP 0
 #define USE_IP6 false
-#define NEED_PSRAM true
-#define MIN_PSRAM 4
 
 #define APP_NAME "ESP32_AdBlocker" // max 15 chars
 #define APP_VER "3.7"
@@ -41,6 +59,12 @@
 #define MAX_CONFIGS 70 // > number of entries in configs.txt
 #define GITHUB_PATH "/s60sc/ESP32_AdBlocker/main"
 #define CUSTOM_FILE_PATH DATA_DIR "/custom" TEXT_EXT
+#if BL_FLASH_INDEX
+#define BL_HASH_FILE DATA_DIR "/blhash.bin" // sorted 64-bit domain hashes
+#define BL_RAW_FILE DATA_DIR "/blraw.bin"   // unsorted hashes while a rebuild runs
+#define BL_CUSTOM_MAX 128                   // custom add / remove entries kept in RAM
+#define BL_FS_RESERVE (200 * 1024)          // flash left for /data, log and config
+#endif
 
 #define STORAGE LittleFS // One of LittleFS or SD_MMC
 #define RAMSIZE (1024 * 8) 
@@ -124,6 +148,29 @@ enum DnsResult : uint8_t {
   DNS_NXDOMAIN = 2,  // upstream RCODE 3 (no name)    -> reply RCODE 3
   DNS_SERVFAIL = 3   // timeout / RCODE 2,4,5         -> reply RCODE 2
 };
+
+#if BL_FLASH_INDEX
+// blocklistC3.cpp - flash resident blocklist used when there is no PSRAM
+uint64_t blHash(const char* name);          // FNV-1a 64 over a normalised name
+bool blInit();                              // open (or create) the hash file
+bool blBeginBuild();                        // start a fresh raw hash file
+bool blAddHash(uint64_t h);                 // append one hash, false when full
+bool blCommitBuild(uint32_t& rawCount);     // sort raw hashes into the hash file
+void blDiscardBuild();                      // drop a partial build
+bool blIsBlocked(uint64_t h);               // custom rules, then the hash file
+uint32_t blCount();                         // domains in the hash file
+uint32_t blGeneration();                    // changes when the rules change
+uint32_t blCapacity();                      // domains the partition can hold
+void blSetLimit(uint32_t limit);            // cap from the maxDomains setting
+size_t blStoreBytes();                      // bytes used by the hash file
+void blShow(uint32_t maxItems);             // log stored hashes
+bool blCustomLoad();                        // reload custom add/delete rules
+bool blCustomAdd(uint64_t h);
+bool blCustomDel(uint64_t h);
+void blCustomClear();
+uint32_t blCustomAddedCount();
+uint32_t blCustomDeletedCount();
+#endif
 
 DnsResult checkBlocklist(const char* domainName, IPAddress& retIP); // Returns BLOCKED (retIP=0.0.0.0) or RESOLVED (not in list)
 DnsResult resolveDomainStatus(const char* domainName, IPAddress& retIP); // Upstream UDP resolve with cache/failover: RESOLVED, NXDOMAIN, or SERVFAIL

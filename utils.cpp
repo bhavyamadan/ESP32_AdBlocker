@@ -195,9 +195,21 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
 }
 
 static void setWifiAP() {
+  // a stale "started" flag would skip the AP entirely, so trust the driver
+  if (APstarted && !(WiFi.getMode() & WIFI_MODE_AP)) APstarted = false;
   if (!APstarted) {
     delay(100);
-    WiFi.AP.begin();
+    /* The driver can still be busy settling the station interface, in which
+     * case the switch to AP+STA mode is refused.  Retry rather than leaving
+     * the device with no access point at all. */
+    bool apOk = false;
+    for (int attempt = 0; attempt < 5 && !apOk; attempt++) {
+      apOk = WiFi.AP.begin();
+      if (!apOk) {
+        LOG_WRN("AP enable attempt %d failed", attempt + 1);
+        delay(200);
+      }
+    }
     // Set access point with static ip if provided
     if (strlen(AP_ip) > 1) {
       LOG_INF("Set AP static IP :%s, %s, %s", AP_ip, AP_gw, AP_sn);  
@@ -208,7 +220,8 @@ static void setWifiAP() {
       // set static ip
       WiFi.AP.config(_ip, _gw, _sn);
     } 
-    WiFi.AP.create(AP_SSID, AP_Pass);
+    bool crOk = WiFi.AP.create(AP_SSID, AP_Pass);
+    if (!apOk || !crOk) LOG_ERR("Failed to start access point");
     // allow AP time to start
     uint32_t t0 = millis();
     while (!APstarted && millis() - t0 < 2000) delay(50);
@@ -234,7 +247,9 @@ static void setWifiSTA() {
   } else LOG_INF("Wifi Station IP from DHCP");
   WiFi.STA.enableIPv6(USE_IP6); 
   WiFi.STA.begin();
-  WiFi.STA.connect(ST_SSID, ST_Pass);
+  // an empty SSID cannot connect and leaves the driver busy, which blocks the
+  // later switch to AP+STA mode
+  if (strlen(ST_SSID)) WiFi.STA.connect(ST_SSID, ST_Pass);
   debugMemory("setWifiSTA");
 }
 
@@ -482,6 +497,17 @@ static bool startWifi(bool firstcall = true) { // firstcall: true on initial inv
     wlStat == WL_IDLE_STATUS) {
     setWifiAP(); // Configure and start Access Point for provisioning or fallback access.
   }
+  if (!APstarted) LOG_ERR("Access point did not start");
+  /* A device that has no router configured, that has connected to one, or that
+   * is reachable over its own access point cannot be in a crash loop: the ping
+   * which normally clears the flag only runs once the network is up.  Without
+   * this, rebooting during first time setup leaves startupFailure set, which
+   * makes startWebServer() report failure, which in turn stops the status task
+   * that would clear the flag and skips appSetup (so no DNS either). */
+  if (APstarted || !strlen(ST_SSID) || wlStat == WL_CONNECTED) {
+    resetCrashLoop();
+    if (strstr(startupFailure, "Crash loop") != NULL) startupFailure[0] = 0;
+  }
   
   // Start mDNS only on the ESP32-S3 and only if the Station obtained a valid IP address.
 #if CONFIG_IDF_TARGET_ESP32S3
@@ -541,7 +567,19 @@ bool startNetwork(bool firstcall) {
     LOG_WRN("%s", startupFailure);
   }
   if (res) while(!dataFilesChecked) delay (1000);
-  if (res) getExtIP();
+  if (res) {
+    /* The first hostname lookup after connecting clears the lwIP DNS cache
+     * when the IPv4/IPv6 state changes.  If SNTP's own lookup is still
+     * pending at that moment its callback runs outside the TCPIP task and
+     * asserts in sys_untimeout().  Let the clock settle before looking up
+     * any name ourselves - getExtIP() and the blocklist download both do. */
+    if (WiFi.status() == WL_CONNECTED) {
+      uint32_t waitStart = millis();
+      while (!timeSynchronized && millis() - waitStart < 8000) delay(100);
+      if (!timeSynchronized) LOG_WRN("Clock not synced, lookup may race SNTP");
+    }
+    getExtIP();
+  }
   return res;
 }
 
@@ -1341,7 +1379,7 @@ bool utilsStartup() {
   STACK_MEM = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
 #endif
   logSetup();
-#ifdef NEED_PSRAM
+#if NEED_PSRAM
   if (psramFound()) {
     if (ESP.getPsramSize() < MIN_PSRAM * ONEMEG) 
       snprintf(startupFailure, SF_LEN, STARTUP_FAIL "App needs at least %dMB PSRAM", MIN_PSRAM);
