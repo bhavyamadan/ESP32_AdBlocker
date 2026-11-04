@@ -573,12 +573,12 @@ bool startNetwork(bool firstcall) {
   }
   if (res) while(!dataFilesChecked) delay (1000);
   if (res) {
-    /* The first hostname lookup after connecting clears the lwIP DNS cache
-     * when the IPv4/IPv6 state changes.  If SNTP's own lookup is still
-     * pending at that moment its callback runs outside the TCPIP task and
-     * asserts in sys_untimeout().  Let the clock settle before looking up
-     * any name ourselves - getExtIP() and the blocklist download both do. */
-    if (WiFi.status() == WL_CONNECTED) {
+    /* A hostname NTP server makes lwIP SNTP hold a DNS request open, and the
+     * core's cache clear can then fire its callback outside the TCPIP task.
+     * A numeric address needs no DNS, so only wait when a name is in use -
+     * otherwise this costs several seconds of boot time for nothing. */
+    bool ntpNeedsDns = strspn(ntpServer, "0123456789.") != strlen(ntpServer);
+    if (ntpNeedsDns && WiFi.status() == WL_CONNECTED) {
       uint32_t waitStart = millis();
       while (!timeSynchronized && millis() - waitStart < 8000) delay(100);
       if (!timeSynchronized) LOG_WRN("Clock not synced, lookup may race SNTP");
