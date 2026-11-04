@@ -917,9 +917,14 @@ static bool loadBlockList(const char* reason) {
     LOG_INF("%s load of latest blocklist", reason);
     setLedState(LED_DOWNLOAD); //Change Status LED
     if (timeSynchronized || !useSecure) {
-      /* The live hash file is only replaced once a download has completed, so
-       * a failed download keeps the previous list in service. */
-      if (blBeginBuild()) res = downloadBlockList();
+      if (!strcmp(reason, "Initial") && blCount()) {
+        /* A stored list is already in service and the daily alarm refreshes
+         * it, so skip the download at boot: it costs about a minute of flash
+         * writes and would otherwise be repeated on every restart. */
+        LOG_INF("Serving stored blocklist, %lu domains", (unsigned long)blCount());
+        updateConfigVect("loadProg", "From Flash");
+        res = true;
+      } else if (blBeginBuild()) res = downloadBlockList();
       else {
         snprintf(startupFailure, SF_LEN, STARTUP_FAIL "Cannot create blocklist file");
         LOG_ERR("%s", startupFailure);
@@ -1063,9 +1068,16 @@ bool appSetup() {
   updateConfigVect("allowCnt", "0");
   if (xLedPin) xTaskCreatePinnedToCore(ledTask, "ledTask", 2048, NULL, 1, NULL, APP_CORE); // Change Status LED
   if (!strlen(ST_SSID)) setLedState(LED_AP_MODE);   // setup-needed state ASAP
-  loadBlockList("Initial"); // best effort - DNS starts regardless
-  if (!strlen(ST_SSID)) setLedState(LED_AP_MODE); //Change Status LED
+#if BL_FLASH_INDEX
+  /* The stored hash file is ready as soon as blInit() opened it, so serve DNS
+   * immediately instead of waiting for the refresh, which takes about a
+   * minute.  The DNS task runs independently of this one. */
   prepDNS();
+  loadBlockList("Initial"); // refresh in the background
+#else
+  loadBlockList("Initial"); // best effort - DNS starts regardless
+  prepDNS();
+#endif
   appSetupDone = true;
   return true;
 }
